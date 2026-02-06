@@ -1,32 +1,273 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Map QA Tool</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta charset="UTF-8" />
+  <title>AI-Based Map Quality Assurance</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1f2933;
+      --primary: #3b82f6;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --radius: 14px;
+      --shadow: 0 10px 25px rgba(0,0,0,.4);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #020617, #0f172a);
+      color: var(--text);
+      font-family: system-ui, sans-serif;
+      padding: 32px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 6px;
+    }
+
+    p.subtitle {
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 30px;
+    }
+
+    .layout {
+      max-width: 1100px;
+      margin: auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .card {
+      background: radial-gradient(circle at top left, #1f2937, var(--card));
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .full {
+      grid-column: 1 / -1;
+    }
+
+    select, input[type=file] {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      background: #020617;
+      border: 1px dashed rgba(255,255,255,.2);
+      color: var(--text);
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--primary), #2563eb);
+      color: white;
+    }
+
+    button.secondary {
+      background: #475569;
+      margin-left: 10px;
+    }
+
+    .status {
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .ok { color: var(--success); }
+    .error { color: var(--danger); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 8px;
+      border-bottom: 1px solid #334155;
+      text-align: left;
+    }
+
+    th {
+      color: #bfdbfe;
+    }
+
+    #outputImage {
+      margin-top: 15px;
+      width: 100%;
+      border-radius: 12px;
+      display: none;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
+
 <body>
 
-<h2>Map Quality Assurance Tool</h2>
+<h1>AI-Based Map Quality Assurance</h1>
+<p class="subtitle">Image & Geometry QA with rule-based + ML detection</p>
 
-<label>
-  QA Mode:
-  <select id="mode">
-    <option value="geometry">Geometry-based QA (WKT)</option>
-    <option value="image">Image-based QA</option>
-  </select>
-</label>
+<div class="layout">
 
-<br><br>
+  <!-- INPUT -->
+  <div class="card">
+    <h3>1. Upload Data</h3>
 
-<input type="file" id="fileInput">
-<br><br>
+    <label>QA Mode</label>
+    <select id="mode">
+      <option value="image">Image QA (Map Screenshot)</option>
+      <option value="geometry">Geometry QA (WKT)</option>
+    </select>
 
-<button onclick="runQA()">Run QA</button>
+    <input type="file" id="fileInput" />
 
-<h3>Results</h3>
-<div id="errors"></div>
-<img id="outputImage" />
+    <button onclick="runQA()">Run QA</button>
+    <button class="secondary" onclick="resetUI()">Reset</button>
+  </div>
 
-<script src="/static/app.js"></script>
+  <!-- RESULTS -->
+  <div class="card">
+    <h3>2. QA Results</h3>
+    <div id="status" class="status"></div>
+    <div id="results">Waiting for analysis…</div>
+    <img id="outputImage" />
+  </div>
+
+  <div class="card full">
+    <h3>What This Tool Does</h3>
+    <p>
+      • Image QA detects visually broken or incomplete maps using feature statistics and ML<br>
+      • Geometry QA validates vector data using topology rules and anomaly detection
+    </p>
+  </div>
+
+</div>
+
+<script>
+async function runQA() {
+  const mode = document.getElementById("mode").value;
+  const file = document.getElementById("fileInput").files[0];
+
+  if (!file) {
+    alert("Please upload a file.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const endpoint = mode === "image" ? "/qa/image" : "/qa/geometry";
+
+  document.getElementById("status").textContent = "Running QA...";
+  document.getElementById("results").innerHTML = "";
+
+  try {
+    const res = await fetch(endpoint, { method: "POST", body: formData });
+    const data = await res.json();
+
+    // ---- STATUS ----
+    if (data.errors && data.errors.length > 0) {
+      document.getElementById("status").innerHTML =
+        `<span class="error">❌ Issues Detected (${data.errors.length})</span>`;
+    } else {
+      document.getElementById("status").innerHTML =
+        `<span class="ok">✅ QA Passed</span>`;
+    }
+
+    // ---- TABLE ----
+    if (!data.errors || data.errors.length === 0) {
+      document.getElementById("results").innerHTML =
+        "<p>No quality issues found.</p>";
+    } else {
+      document.getElementById("results").innerHTML = renderTable(data.errors);
+    }
+
+    // ---- IMAGE ----
+    if (data.output_url) {
+      const img = document.getElementById("outputImage");
+      img.src = data.output_url;
+      img.style.display = "block";
+    }
+
+  } catch (err) {
+    document.getElementById("status").innerHTML =
+      `<span class="error">❌ QA Failed</span>`;
+    document.getElementById("results").textContent = err.toString();
+  }
+}
+
+function renderTable(errors) {
+  let html = `
+    <table>
+      <thead>
+        <tr>
+          <th>Issue</th>
+          <th>Feature</th>
+          <th>Severity</th>
+          <th>Explanation</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  errors.forEach(e => {
+    html += `
+      <tr>
+        <td>${humanizeType(e.type)}</td>
+        <td>${e.feature || "-"}</td>
+        <td>${e.severity ?? "-"}</td>
+        <td>${humanizeDescription(e)}</td>
+      </tr>
+    `;
+  });
+
+  html += "</tbody></table>";
+  return html;
+}
+
+function humanizeType(type) {
+  return type.replace(/_/g, " ").toUpperCase();
+}
+
+function humanizeDescription(e) {
+  if (e.feature === "line_count") {
+    return "Very few road segments detected compared to normal maps.";
+  }
+  if (e.feature === "connected_components") {
+    return "The map structure is sparse with very few connected regions.";
+  }
+  if (e.type === "image_ml_anomaly") {
+    return "Overall visual structure is unusual compared to baseline maps.";
+  }
+  return e.description || "Quality issue detected.";
+}
+
+function resetUI() {
+  document.getElementById("fileInput").value = "";
+  document.getElementById("results").innerHTML = "Waiting for analysis…";
+  document.getElementById("status").textContent = "";
+  document.getElementById("outputImage").style.display = "none";
+}
+</script>
+
 </body>
 </html>

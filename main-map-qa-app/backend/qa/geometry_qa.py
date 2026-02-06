@@ -576,7 +576,7 @@ async def run_geometry_qa(uploaded_file):
         else:
             ax.plot(x, y, color="black", linewidth=1)
 
-    ax.set_title("Geometry QA – Rules + Z-score + Isolation Forest")
+    ax.set_title("Automated Geometry Anomaly Detection")
     ax.set_aspect("equal")
 
     out_name = f"geometry_{uuid.uuid4().hex}.png"
