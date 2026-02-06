@@ -92,8 +92,9 @@ async def image_qa(file: UploadFile = File(...)):
 async def geometry_qa(file: UploadFile = File(...)):
     """
     Geometry-based QA using Shapely.
-    Detects label–street overlaps from WKT data.
+    Validates vector geometry and detects structural anomalies.
     """
+
     output_path, errors = await run_geometry_qa(file)
 
     return {
