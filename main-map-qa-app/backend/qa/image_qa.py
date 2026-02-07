@@ -223,6 +223,254 @@
 #
 #     return f"/outputs/{out_name}", errors
 
+# import cv2
+# import numpy as np
+# import pickle
+# import uuid
+# import os
+# from sklearn.ensemble import IsolationForest
+#
+# # -------------------------------------------------------------------
+# # Config
+# # -------------------------------------------------------------------
+# OUTPUT_DIR = "backend/outputs"
+# BASELINE_PATH = "backend/image_baseline.pkl"
+# GOOD_IMAGE_DIR = "good_images"  # folder with baseline screenshots
+#
+# os.makedirs(OUTPUT_DIR, exist_ok=True)
+#
+#
+# # --------------------------------------------------
+# # Feature Extraction
+# # --------------------------------------------------
+# def extract_image_features(img):
+#     # ---- Preprocess ----
+#     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+#     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+#
+#     # ---- Edge Detection ----
+#     edges = cv2.Canny(blurred, 50, 150)
+#     h, w = edges.shape
+#     edge_density = np.sum(edges > 0) / (h * w)
+#
+#     # ---- Line Detection ----
+#     lines = cv2.HoughLinesP(
+#         edges,
+#         rho=1,
+#         theta=np.pi / 180,
+#         threshold=50,
+#         minLineLength=40,
+#         maxLineGap=15
+#     )
+#
+#     line_count = 0
+#     avg_line_len = 0.0
+#     orientations = []
+#
+#     if lines is not None:
+#         line_count = len(lines)
+#         lengths = []
+#         for l in lines:
+#             x1, y1, x2, y2 = l[0]
+#             lengths.append(np.hypot(x2 - x1, y2 - y1))
+#             orientations.append(np.arctan2((y2 - y1), (x2 - x1)))
+#         avg_line_len = np.mean(lengths) if lengths else 0.0
+#
+#     # ---- Connected Components (edges) ----
+#     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
+#     connected_components = num_labels - 1  # exclude background
+#
+#     # ---- Coverage (rows & columns) ----
+#     row_coverage = np.mean(np.any(edges > 0, axis=1))
+#     col_coverage = np.mean(np.any(edges > 0, axis=0))
+#
+#     # ---- Orientation Variance ----
+#     orientation_variance = float(np.var(orientations)) if orientations else 0.0
+#
+#     return [
+#         edge_density,
+#         line_count,
+#         avg_line_len,
+#         orientation_variance,
+#         connected_components,
+#         row_coverage,
+#         col_coverage
+#     ]
+#
+#
+# # --------------------------------------------------
+# # Baseline Builder
+# # --------------------------------------------------
+# def build_baseline():
+#     """
+#     Read images from GOOD_IMAGE_DIR,
+#     compute features, then set:
+#       BASE_MEAN, BASE_STD, IF_MODEL
+#     and save to BASELINE_PATH
+#     """
+#     feature_list = []
+#     if not os.path.isdir(GOOD_IMAGE_DIR):
+#         return None, None, None
+#
+#     for fname in os.listdir(GOOD_IMAGE_DIR):
+#         path = os.path.join(GOOD_IMAGE_DIR, fname)
+#         img = cv2.imread(path)
+#         if img is None:
+#             continue
+#         feature_list.append(extract_image_features(img))
+#
+#     if not feature_list:
+#         return None, None, None
+#
+#     X = np.array(feature_list)
+#     mean = X.mean(axis=0)
+#     std = X.std(axis=0)
+#
+#     # train simple IsolationForest
+#     if_model = IsolationForest(n_estimators=100, contamination=0.1, random_state=42)
+#     if_model.fit(X)
+#
+#     # save baseline
+#     baseline = {"mean": mean, "std": std, "if_model": if_model}
+#     try:
+#         with open(BASELINE_PATH, "wb") as f:
+#             pickle.dump(baseline, f)
+#     except:
+#         pass
+#
+#     return mean, std, if_model
+#
+#
+# # --------------------------------------------------
+# # Load or build baseline once
+# # --------------------------------------------------
+# BASE_MEAN, BASE_STD, IF_MODEL = None, None, None
+#
+# if os.path.exists(BASELINE_PATH):
+#     try:
+#         with open(BASELINE_PATH, "rb") as f:
+#             baseline = pickle.load(f)
+#             BASE_MEAN = baseline.get("mean")
+#             BASE_STD = baseline.get("std")
+#             IF_MODEL = baseline.get("if_model")
+#     except Exception as e:
+#         # failed to load -> rebuild
+#         BASE_MEAN, BASE_STD, IF_MODEL = build_baseline()
+# else:
+#     BASE_MEAN, BASE_STD, IF_MODEL = build_baseline()
+#
+#
+# # --------------------------------------------------
+# # Anomaly Detection Helpers
+# # --------------------------------------------------
+# ZSCORE_THRESHOLD = 3.0
+#
+# FEATURE_NAMES = [
+#     "edge_density",
+#     "line_count",
+#     "avg_line_length",
+#     "orientation_variance",
+#     "connected_components",
+#     "row_coverage",
+#     "col_coverage"
+# ]
+#
+# def zscore_anomalies_vector(features):
+#     if BASE_MEAN is None or BASE_STD is None:
+#         return []
+#
+#     features = np.array(features)
+#     z = np.abs((features - BASE_MEAN) / (BASE_STD + 1e-9))
+#
+#     anomalies = []
+#     for idx, val in enumerate(z):
+#         feature_name = FEATURE_NAMES[idx]
+#
+#         # if baseline std is very small, use % deviation
+#         if BASE_STD[idx] < 0.01:
+#             diff = abs(features[idx] - BASE_MEAN[idx])
+#             perc = diff / (BASE_MEAN[idx] + 1e-9)
+#
+#             if perc > 0.2:  # 20% baseline deviation
+#                 anomalies.append({
+#                     "type": "image_zscore_anomaly",
+#                     "feature": feature_name,
+#                     "severity": round(min(perc, 1.0), 2),
+#                     "description": f"{feature_name} deviates {round(perc*100,1)}% from baseline"
+#                 })
+#         else:
+#             # normal z-score based detection
+#             if val > ZSCORE_THRESHOLD:
+#                 severity = round(min(val / (ZSCORE_THRESHOLD * 2), 1.0), 2)
+#                 anomalies.append({
+#                     "type": "image_zscore_anomaly",
+#                     "feature": feature_name,
+#                     "severity": severity,
+#                     "description": f"{feature_name} Z-score {round(float(val),2)}"
+#                 })
+#     return anomalies
+#
+#
+# def isolation_forest_anomaly(features):
+#     if IF_MODEL is None:
+#         return []
+#
+#     X = np.array(features).reshape(1, -1)
+#     pred = IF_MODEL.predict(X)
+#
+#     if pred == -1:
+#         return [{
+#             "type": "image_ml_anomaly",
+#             "severity": 0.6,
+#             "description": "Isolation Forest flagged this image as unusual"
+#         }]
+#     return []
+#
+#
+# # --------------------------------------------------
+# # MAIN ENTRY POINT for FastAPI
+# # --------------------------------------------------
+# async def run_image_qa(uploaded_file):
+#     # load image
+#     file_bytes = np.frombuffer(await uploaded_file.read(), np.uint8)
+#     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+#
+#     if img is None:
+#         return None, [{
+#             "type": "invalid_image",
+#             "severity": 1.0,
+#             "description": "Uploaded file is not a valid image"
+#         }]
+#
+#     # compute features
+#     features = extract_image_features(img)
+#
+#     # anomaly detection
+#     errors = []
+#     errors.extend(zscore_anomalies_vector(features))
+#     errors.extend(isolation_forest_anomaly(features))
+#
+#     # visualize
+#     vis = img.copy()
+#     if errors:
+#         h, w, _ = vis.shape
+#         cv2.rectangle(vis, (0,0), (w-1,h-1), (0,0,255), 4)
+#         cv2.putText(
+#             vis,
+#             "Anomaly Detected",
+#             (30, 50),
+#             cv2.FONT_HERSHEY_SIMPLEX,
+#             1.2,
+#             (0, 0, 255),
+#             3
+#         )
+#
+#     out_name = f"image_{uuid.uuid4().hex}.png"
+#     out_path = os.path.join(OUTPUT_DIR, out_name)
+#     cv2.imwrite(out_path, vis)
+#
+#     return f"/outputs/{out_name}", errors
+
 import cv2
 import numpy as np
 import pickle
@@ -230,37 +478,40 @@ import uuid
 import os
 from sklearn.ensemble import IsolationForest
 
-# -------------------------------------------------------------------
+# --------------------------------------------------
 # Config
-# -------------------------------------------------------------------
+# --------------------------------------------------
 OUTPUT_DIR = "backend/outputs"
 BASELINE_PATH = "backend/image_baseline.pkl"
-GOOD_IMAGE_DIR = "good_images"  # folder with baseline screenshots
+GOOD_IMAGE_DIR = "good_images"
+
+ZSCORE_THRESHOLD = 3.5
+
+FEATURE_NAMES = [
+    "edge_density",
+    "line_count",
+    "avg_line_length",
+    "orientation_variance",
+    "connected_components",
+    "row_coverage",
+    "col_coverage"
+]
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 
 # --------------------------------------------------
 # Feature Extraction
 # --------------------------------------------------
 def extract_image_features(img):
-    # ---- Preprocess ----
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # ---- Edge Detection ----
     edges = cv2.Canny(blurred, 50, 150)
     h, w = edges.shape
     edge_density = np.sum(edges > 0) / (h * w)
 
-    # ---- Line Detection ----
     lines = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=50,
-        minLineLength=40,
-        maxLineGap=15
+        edges, 1, np.pi / 180, 50, minLineLength=40, maxLineGap=15
     )
 
     line_count = 0
@@ -273,21 +524,17 @@ def extract_image_features(img):
         for l in lines:
             x1, y1, x2, y2 = l[0]
             lengths.append(np.hypot(x2 - x1, y2 - y1))
-            orientations.append(np.arctan2((y2 - y1), (x2 - x1)))
-        avg_line_len = np.mean(lengths) if lengths else 0.0
+            orientations.append(np.arctan2(y2 - y1, x2 - x1))
+        avg_line_len = float(np.mean(lengths)) if lengths else 0.0
 
-    # ---- Connected Components (edges) ----
-    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
-    connected_components = num_labels - 1  # exclude background
+    num_labels, _, _, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
+    connected_components = num_labels - 1
 
-    # ---- Coverage (rows & columns) ----
     row_coverage = np.mean(np.any(edges > 0, axis=1))
     col_coverage = np.mean(np.any(edges > 0, axis=0))
-
-    # ---- Orientation Variance ----
     orientation_variance = float(np.var(orientations)) if orientations else 0.0
 
-    return [
+    return np.array([
         edge_density,
         line_count,
         avg_line_len,
@@ -295,119 +542,68 @@ def extract_image_features(img):
         connected_components,
         row_coverage,
         col_coverage
-    ]
+    ])
 
 
 # --------------------------------------------------
-# Baseline Builder
+# Baseline Training / Loading
 # --------------------------------------------------
 def build_baseline():
-    """
-    Read images from GOOD_IMAGE_DIR,
-    compute features, then set:
-      BASE_MEAN, BASE_STD, IF_MODEL
-    and save to BASELINE_PATH
-    """
-    feature_list = []
+    features = []
+
     if not os.path.isdir(GOOD_IMAGE_DIR):
         return None, None, None
 
     for fname in os.listdir(GOOD_IMAGE_DIR):
-        path = os.path.join(GOOD_IMAGE_DIR, fname)
-        img = cv2.imread(path)
-        if img is None:
-            continue
-        feature_list.append(extract_image_features(img))
+        img = cv2.imread(os.path.join(GOOD_IMAGE_DIR, fname))
+        if img is not None:
+            features.append(extract_image_features(img))
 
-    if not feature_list:
+    if not features:
         return None, None, None
 
-    X = np.array(feature_list)
+    X = np.vstack(features)
     mean = X.mean(axis=0)
     std = X.std(axis=0)
 
-    # train simple IsolationForest
-    if_model = IsolationForest(n_estimators=100, contamination=0.1, random_state=42)
-    if_model.fit(X)
+    model = IsolationForest(
+        n_estimators=100, contamination=0.1, random_state=42
+    )
+    model.fit(X)
 
-    # save baseline
-    baseline = {"mean": mean, "std": std, "if_model": if_model}
-    try:
-        with open(BASELINE_PATH, "wb") as f:
-            pickle.dump(baseline, f)
-    except:
-        pass
+    with open(BASELINE_PATH, "wb") as f:
+        pickle.dump({"mean": mean, "std": std, "model": model}, f)
 
-    return mean, std, if_model
+    return mean, std, model
 
-
-# --------------------------------------------------
-# Load or build baseline once
-# --------------------------------------------------
-BASE_MEAN, BASE_STD, IF_MODEL = None, None, None
 
 if os.path.exists(BASELINE_PATH):
-    try:
-        with open(BASELINE_PATH, "rb") as f:
-            baseline = pickle.load(f)
-            BASE_MEAN = baseline.get("mean")
-            BASE_STD = baseline.get("std")
-            IF_MODEL = baseline.get("if_model")
-    except Exception as e:
-        # failed to load -> rebuild
-        BASE_MEAN, BASE_STD, IF_MODEL = build_baseline()
+    with open(BASELINE_PATH, "rb") as f:
+        baseline = pickle.load(f)
+        BASE_MEAN = baseline["mean"]
+        BASE_STD = baseline["std"]
+        IF_MODEL = baseline["model"]
 else:
     BASE_MEAN, BASE_STD, IF_MODEL = build_baseline()
 
 
 # --------------------------------------------------
-# Anomaly Detection Helpers
+# Anomaly Detection
 # --------------------------------------------------
-ZSCORE_THRESHOLD = 3.0
-
-FEATURE_NAMES = [
-    "edge_density",
-    "line_count",
-    "avg_line_length",
-    "orientation_variance",
-    "connected_components",
-    "row_coverage",
-    "col_coverage"
-]
-
-def zscore_anomalies_vector(features):
+def zscore_anomalies(features):
     if BASE_MEAN is None or BASE_STD is None:
         return []
 
-    features = np.array(features)
     z = np.abs((features - BASE_MEAN) / (BASE_STD + 1e-9))
-
     anomalies = []
-    for idx, val in enumerate(z):
-        feature_name = FEATURE_NAMES[idx]
 
-        # if baseline std is very small, use % deviation
-        if BASE_STD[idx] < 0.01:
-            diff = abs(features[idx] - BASE_MEAN[idx])
-            perc = diff / (BASE_MEAN[idx] + 1e-9)
-
-            if perc > 0.2:  # 20% baseline deviation
-                anomalies.append({
-                    "type": "image_zscore_anomaly",
-                    "feature": feature_name,
-                    "severity": round(min(perc, 1.0), 2),
-                    "description": f"{feature_name} deviates {round(perc*100,1)}% from baseline"
-                })
-        else:
-            # normal z-score based detection
-            if val > ZSCORE_THRESHOLD:
-                severity = round(min(val / (ZSCORE_THRESHOLD * 2), 1.0), 2)
-                anomalies.append({
-                    "type": "image_zscore_anomaly",
-                    "feature": feature_name,
-                    "severity": severity,
-                    "description": f"{feature_name} Z-score {round(float(val),2)}"
-                })
+    for i, val in enumerate(z):
+        if val > ZSCORE_THRESHOLD:
+            anomalies.append({
+                "type": "image_zscore_anomaly",
+                "feature": FEATURE_NAMES[i],
+                "severity": round(min(val / (ZSCORE_THRESHOLD * 2), 1.0), 2)
+            })
     return anomalies
 
 
@@ -415,58 +611,82 @@ def isolation_forest_anomaly(features):
     if IF_MODEL is None:
         return []
 
-    X = np.array(features).reshape(1, -1)
-    pred = IF_MODEL.predict(X)
-
-    if pred == -1:
+    if IF_MODEL.predict(features.reshape(1, -1))[0] == -1:
         return [{
             "type": "image_ml_anomaly",
-            "severity": 0.6,
-            "description": "Isolation Forest flagged this image as unusual"
+            "severity": 0.6
         }]
     return []
 
 
 # --------------------------------------------------
-# MAIN ENTRY POINT for FastAPI
+# Visual Occlusion / Solid Patch Detection
+# --------------------------------------------------
+def detect_solid_patches(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0)
+    grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1)
+    grad = cv2.addWeighted(
+        cv2.convertScaleAbs(grad_x), 0.5,
+        cv2.convertScaleAbs(grad_y), 0.5, 0
+    )
+
+    _, flat_mask = cv2.threshold(grad, 20, 255, cv2.THRESH_BINARY_INV)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    flat_mask = cv2.morphologyEx(flat_mask, cv2.MORPH_OPEN, kernel)
+    flat_mask = cv2.morphologyEx(flat_mask, cv2.MORPH_CLOSE, kernel)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(flat_mask, 8)
+    h, w = img.shape[:2]
+    min_area = 0.01 * (h * w)
+
+    anomalies = []
+
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] > min_area:
+            x, y, w_, h_ = stats[i, :4]
+            anomalies.append({
+                "type": "visual_occlusion",
+                "severity": 0.85,
+                "bbox": [int(x), int(y), int(w_), int(h_)]
+            })
+
+    return anomalies
+
+
+# --------------------------------------------------
+# MAIN ENTRY POINT
 # --------------------------------------------------
 async def run_image_qa(uploaded_file):
-    # load image
     file_bytes = np.frombuffer(await uploaded_file.read(), np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
     if img is None:
         return None, [{
             "type": "invalid_image",
-            "severity": 1.0,
-            "description": "Uploaded file is not a valid image"
+            "severity": 1.0
         }]
 
-    # compute features
     features = extract_image_features(img)
 
-    # anomaly detection
     errors = []
-    errors.extend(zscore_anomalies_vector(features))
+    errors.extend(zscore_anomalies(features))
     errors.extend(isolation_forest_anomaly(features))
 
-    # visualize
+    patch_errors = detect_solid_patches(img)
+    errors.extend(patch_errors)
+
     vis = img.copy()
+    for e in patch_errors:
+        x, y, w_, h_ = e["bbox"]
+        cv2.rectangle(vis, (x, y), (x+w_, y+h_), (0, 165, 255), 3)
+
     if errors:
         h, w, _ = vis.shape
         cv2.rectangle(vis, (0,0), (w-1,h-1), (0,0,255), 4)
-        cv2.putText(
-            vis,
-            "Anomaly Detected",
-            (30, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (0, 0, 255),
-            3
-        )
 
     out_name = f"image_{uuid.uuid4().hex}.png"
-    out_path = os.path.join(OUTPUT_DIR, out_name)
-    cv2.imwrite(out_path, vis)
+    cv2.imwrite(os.path.join(OUTPUT_DIR, out_name), vis)
 
     return f"/outputs/{out_name}", errors
